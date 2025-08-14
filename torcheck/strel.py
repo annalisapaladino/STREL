@@ -793,8 +793,8 @@ class Reach(Node):
                 else:
                     d_max = torch.max(self.distance_function(self.weight_matrix[b, t]))
                     self.d2 = self.d1 + d_max
-                    s_full = self._bounded_reach_boolean(x)  # shape [B, N, T, 1]
-                    s = s_full[b, :, t].clone().detach().requires_grad_(True)  # shape [N]
+                    s_full = self._bounded_reach_boolean(x) 
+                    s = s_full[b, :, t].to(dtype=torch.float32)
 
                 T = list(range(num_nodes))
 
@@ -915,7 +915,7 @@ class Reach(Node):
                     d_max = torch.max(self.distance_function(self.weight_matrix[b, t]))
                     self.d2 = self.d1 + d_max
                     s_full = self._bounded_reach_quantitative(x)  # shape [B, N, T, 1]
-                    s = s_full[b, :, t].clone().detach().requires_grad_(True)  # shape [N], differenziabile
+                    s = s_full[b, :, t].to(dtype=torch.float32)
 
                 T = list(range(num_nodes))
 
