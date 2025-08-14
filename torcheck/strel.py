@@ -44,6 +44,9 @@ def eventually(x: Tensor, time_span: int) -> Tensor:
     """
     return F.max_pool1d(x, kernel_size=time_span, stride=1)
 
+# ---------------------
+#     NODE
+# ---------------------
 
 class Node:
     """Abstract node class for STL semantics tree."""
@@ -133,6 +136,9 @@ class Node:
         """Extrapolates the vector of truth values at time zero"""
         return torch.reshape(x[:, 0, 0], (-1,))
 
+# ---------------------
+#     ATOM
+# ---------------------
 
 class Atom(Node):
 
@@ -157,7 +163,7 @@ class Atom(Node):
     def _boolean(self, x: Tensor) -> Tensor:
         # extract tensor of the same dimension as data, but with only one variable
         xj: Tensor = x[:, :, self.var_index,:]
-        # xj: Tensor = xj.view(xj.size()[0], 1, -1)
+        xj: Tensor = xj.view(xj.size()[0], xj.size()[1], 1, -1)
         if self.lte:
             z: Tensor = torch.le(xj, self.threshold)
         else:
@@ -167,7 +173,7 @@ class Atom(Node):
     def _quantitative(self, x: Tensor, normalize: bool = False) -> Tensor:
         # extract tensor of the same dimension as data, but with only one variable
         xj: Tensor = x[:, :, self.var_index]
-        # xj: Tensor = xj.view(xj.size()[0], 1, -1)
+        xj: Tensor = xj.view(xj.size()[0], xj.size()[1], 1, -1)
         if self.lte:
             z: Tensor = -xj + self.threshold
         else:
@@ -175,6 +181,10 @@ class Atom(Node):
         if normalize:
             z: Tensor = torch.tanh(z)
         return z
+
+# ---------------------
+#     NOT
+# ---------------------
 
 class Not(Node):
     """Negation node."""
@@ -198,6 +208,9 @@ class Not(Node):
         z: Tensor = -self.child._quantitative(x, normalize)
         return z
 
+# ---------------------
+#     AND
+# ---------------------
 
 class And(Node):
     """Conjunction node."""
@@ -238,6 +251,9 @@ class And(Node):
         z: Tensor = torch.min(z1, z2)
         return z
 
+# ---------------------
+#     OR
+# ---------------------
 
 class Or(Node):
     """Disjunction node."""
@@ -278,6 +294,9 @@ class Or(Node):
         z: Tensor = torch.max(z1, z2)
         return z
 
+# ---------------------
+#     GLOBALLY
+# ---------------------
 
 class Globally(Node):
     """Globally node."""
@@ -350,6 +369,9 @@ class Globally(Node):
             z: Tensor = -eventually(-z1, self.right_time_bound - self.left_time_bound)
         return z
 
+# ---------------------
+#     EVENTUALLY
+# ---------------------
 
 class Eventually(Node):
     """Eventually node."""
@@ -425,6 +447,9 @@ class Eventually(Node):
             z: Tensor = eventually(z1, self.right_time_bound - self.left_time_bound)
         return z
 
+# ---------------------
+#     UNTIL
+# ---------------------
 
 class Until(Node):
     # TODO: maybe define timed and untimed until, and use this class to wrap them
@@ -509,8 +534,8 @@ class Until(Node):
             z1: Tensor = self.left_child._quantitative(x, normalize)
             z2: Tensor = self.right_child._quantitative(x, normalize)
             size: int = min(z1.size(3), z2.size(3))
-            z1: Tensor = z1[:, :, :size]
-            z2: Tensor = z2[:, :, :size]
+            z1: Tensor = z1[:, :, :, :size]
+            z2: Tensor = z2[:, :, :, :size]
 
             z1_rep = torch.repeat_interleave(z1.unsqueeze(3), z1.unsqueeze(3).shape[-1], 3)
             z1_tril = torch.tril(z1_rep.transpose(3, 4), diagonal=-1)
@@ -541,6 +566,10 @@ class Until(Node):
                                                    left_time_bound=self.left_time_bound, right_unbound=True)))
             z: Tensor = timed_until._quantitative(x, normalize=normalize)
         return z
+
+# ---------------------
+#     SINCE
+# ---------------------
 
 class Since(Node):
     """Since node."""
@@ -660,6 +689,10 @@ class Reach(Node):
 
         self.boolean_min_satisfaction = torch.tensor(0.0)
         self.quantitative_min_satisfaction = torch.tensor(float('-inf'))
+
+    # def __str__(self) -> str:
+        # bound_type = "unbounded" if self.is_unbounded else f"[{self.d1},{self.d2}]"
+        # return f"Reach{bound_type}"
         
     def _initialize_matrices(self, x: Tensor) -> None:
         """Initialize graph matrices from input trajectory data"""
@@ -707,7 +740,7 @@ class Reach(Node):
 
     def _boolean(self, x: Tensor) -> Tensor:
         self._initialize_matrices(x)
-        s2 = self.right_child._boolean(x).squeeze(-1)
+        s2 = self.right_child._boolean(x)
         return (
             self._unbounded_reach_boolean(x, s2)
             if self.is_unbounded
@@ -715,11 +748,11 @@ class Reach(Node):
         )
 
     def _bounded_reach_boolean(self, x: Tensor) -> Tensor:
-        s1 = self.left_child._boolean(x).squeeze(-1)  # [B, N, T]
-        s2 = self.right_child._boolean(x).squeeze(-1)
+        s1 = self.left_child._boolean(x)  # [B, N, 1, T]
+        s2 = self.right_child._boolean(x)
         
-        batch_size, num_nodes, num_timesteps = s1.shape
-        s_batch = torch.zeros((batch_size, num_nodes, num_timesteps),
+        batch_size, num_nodes, _, num_timesteps = s1.shape
+        s_batch = torch.zeros((batch_size, num_nodes, 1, num_timesteps),
                             dtype=torch.float32,
                             requires_grad=True)
         
@@ -730,11 +763,12 @@ class Reach(Node):
 
                 for l in range(num_nodes):
                     if self.d1 == self.distance_domain_min:
-                        s = s.clone().scatter_(0, torch.tensor([l]), s2[b, l, t].to(dtype=s.dtype))
+                        s = s.clone().scatter_(0, torch.tensor([l]), s2[b, l, :, t].to(dtype=s.dtype))
+
                     else:
                         s = s.clone().scatter_(0, torch.tensor([l]), self.boolean_min_satisfaction.to(dtype=s.dtype))
 
-                Q = {llt: [(s2[b, llt, t].to(dtype=s.dtype), self.distance_domain_min)] for llt in range(num_nodes)}
+                Q = {llt: [(s2[b, llt, :, t].to(dtype=s.dtype), self.distance_domain_min)] for llt in range(num_nodes)}
 
                 while Q:
                     Q_prime = {}
@@ -742,7 +776,7 @@ class Reach(Node):
                         for v, d in Q[l]:
                             for l_prime, w in self.neighbors_fn(l, b, t):
     
-                                v_new = torch.minimum(v, s1[b, l_prime, t].to(dtype=s.dtype))
+                                v_new = torch.minimum(v, s1[b, l_prime, :, t].to(dtype=s.dtype))
                                 d_new = d + w
 
                                 if self.d1 <= d_new <= self.d2:
@@ -768,20 +802,19 @@ class Reach(Node):
                                     Q_prime[l_prime] = new_entries
 
                     Q = Q_prime
-                    
+
                 s_batch = s_batch.clone()
-                s_batch.index_put_((torch.tensor([b]), torch.arange(num_nodes), torch.tensor([t])), s)
-        
+                s_batch.index_put_((torch.tensor([b]), torch.arange(num_nodes), torch.tensor([0]), torch.tensor([t])), s)
             
-        return s_batch #.unsqueeze(-1)
+        return s_batch
 
     def _unbounded_reach_boolean(self, x: Tensor, s2: Tensor):
-        s1 = self.left_child._boolean(x).squeeze(-1)  # [B, N, T]
-        s2 = self.right_child._boolean(x).squeeze(-1)
+        s1 = self.left_child._boolean(x)  # [B, N, 1, T]
+        s2 = self.right_child._boolean(x)
         
-        batch_size, num_nodes, num_timesteps = s1.shape
+        batch_size, num_nodes, _, num_timesteps = s1.shape
 
-        s_batch = torch.zeros((batch_size, num_nodes, num_timesteps),
+        s_batch = torch.zeros((batch_size, num_nodes, 1, num_timesteps),
                             dtype=torch.float32,
                             requires_grad=True)
         
@@ -789,12 +822,12 @@ class Reach(Node):
             for t in range(num_timesteps):
 
                 if self.d1 == self.distance_domain_min:
-                    s = s2[b, :, t].to(dtype=torch.float32)
+                    s = s2[b, :, 0, t].to(dtype=torch.float32)
                 else:
                     d_max = torch.max(self.distance_function(self.weight_matrix[b, t]))
                     self.d2 = self.d1 + d_max
-                    s_full = self._bounded_reach_boolean(x) 
-                    s = s_full[b, :, t].to(dtype=torch.float32)
+                    s_full = self._bounded_reach_boolean(x)
+                    s = s_full[b, :, 0, t].to(dtype=torch.float32)
 
                 T = list(range(num_nodes))
 
@@ -803,25 +836,19 @@ class Reach(Node):
 
                     for l in T:
                         for l_prime, _ in self.neighbors_fn(l, b, t):
-
-                            val_s1 = s1[b, l_prime, t].item()
-                            val_s_l = s[l].item()
-                            val_s_l_prime = s[l_prime].item()
-
-                            v_prime = torch.tensor(min(val_s_l, val_s1), dtype=s.dtype)
-                            v_prime = torch.tensor(max(v_prime.item(), val_s_l_prime), dtype=s.dtype)
+                            v_prime = torch.minimum(s[l], s1[b, l_prime, 0, t].to(dtype=s.dtype))
+                            v_prime = torch.maximum(v_prime, s[l_prime])
 
                             if not torch.equal(v_prime, s[l_prime]):
-
-                                s = s.clone().scatter_(0, torch.tensor([l_prime]), v_prime.view(1))
+                                s = s.clone().scatter_(0, torch.tensor([l_prime]), v_prime.to(dtype=s.dtype))
                                 T_prime.append(l_prime)
 
                     T = T_prime
                     
                 s_batch = s_batch.clone()
-                s_batch.index_put_((torch.tensor([b]), torch.arange(num_nodes), torch.tensor([t])), s)
-        
-        return s_batch
+                s_batch.index_put_((torch.tensor([b]), torch.arange(num_nodes), torch.tensor([0]), torch.tensor([t])), s) 
+                
+        return s_batch # return [B, N, 1, T]
 
     # -----------------------------
     #     Quantitative (Reach)
@@ -836,11 +863,11 @@ class Reach(Node):
         )
 
     def _bounded_reach_quantitative(self, x: Tensor, normalize: bool = False) -> Tensor:
-        s1 = self.left_child._quantitative(x, normalize).squeeze(-1) # [B, N, T]
-        s2 = self.right_child._quantitative(x, normalize).squeeze(-1)
+        s1 = self.left_child._quantitative(x, normalize)# [B, N, 1, T]
+        s2 = self.right_child._quantitative(x, normalize)
         
-        batch_size, num_nodes, num_timesteps = s1.shape
-        s_batch = torch.zeros((batch_size, num_nodes, num_timesteps),
+        batch_size, num_nodes, _, num_timesteps = s1.shape
+        s_batch = torch.zeros((batch_size, num_nodes, 1, num_timesteps),
                             dtype=torch.float32,
                             requires_grad=True)
         
@@ -851,11 +878,11 @@ class Reach(Node):
 
                 for l in range(num_nodes):
                     if self.d1 == self.distance_domain_min:
-                        s = s.clone().scatter_(0, torch.tensor([l]), s2[b, l, t].to(dtype=s.dtype))
+                        s = s.clone().scatter_(0, torch.tensor([l]), s2[b, l, :, t].to(dtype=s.dtype))
                     else:
                         s = s.clone().scatter_(0, torch.tensor([l]), self.quantitative_min_satisfaction.to(dtype=s.dtype))
 
-                Q = {llt: [(s2[b, llt, t].to(dtype=s.dtype), self.distance_domain_min)] for llt in range(num_nodes)}
+                Q = {llt: [(s2[b, llt, :, t].to(dtype=s.dtype), self.distance_domain_min)] for llt in range(num_nodes)}
 
                 while Q:
                     Q_prime = {}
@@ -863,7 +890,7 @@ class Reach(Node):
                         for v, d in Q[l]:
                             for l_prime, w in self.neighbors_fn(l, b, t):
     
-                                v_new = torch.minimum(v, s1[b, l_prime, t].to(dtype=s.dtype))
+                                v_new = torch.minimum(v, s1[b, l_prime, :, t].to(dtype=s.dtype))
                                 d_new = d + w
 
                                 if self.d1 <= d_new <= self.d2:
@@ -889,20 +916,20 @@ class Reach(Node):
                                     Q_prime[l_prime] = new_entries
 
                     Q = Q_prime
-                    
+
                 s_batch = s_batch.clone()
-                s_batch.index_put_((torch.tensor([b]), torch.arange(num_nodes), torch.tensor([t])), s)
+                s_batch.index_put_((torch.tensor([b]), torch.arange(num_nodes), torch.tensor([0]), torch.tensor([t])), s)
         
             
         return s_batch
 
     def _unbounded_reach_quantitative(self, x: Tensor, s2: Tensor, normalize: bool = False) -> Tensor:
-        s1 = self.left_child._quantitative(x, normalize).squeeze(-1) # [B, N, T]
-        s2 = self.right_child._quantitative(x, normalize).squeeze(-1)
+        s1 = self.left_child._quantitative(x, normalize) # [B, N, 1, T]
+        s2 = self.right_child._quantitative(x, normalize)
         
-        batch_size, num_nodes, num_timesteps = s1.shape
+        batch_size, num_nodes, _, num_timesteps = s1.shape
 
-        s_batch = torch.zeros((batch_size, num_nodes, num_timesteps),
+        s_batch = torch.zeros((batch_size, num_nodes, 1, num_timesteps),
                             dtype=torch.float32,
                             requires_grad=True)
         
@@ -910,12 +937,12 @@ class Reach(Node):
             for t in range(num_timesteps):
 
                 if self.d1 == self.distance_domain_min:
-                    s = s2[b, :, t].to(dtype=torch.float32)
+                    s = s2[b, :, 0, t].to(dtype=torch.float32)
                 else:
                     d_max = torch.max(self.distance_function(self.weight_matrix[b, t]))
                     self.d2 = self.d1 + d_max
                     s_full = self._bounded_reach_quantitative(x)  # shape [B, N, T, 1]
-                    s = s_full[b, :, t].to(dtype=torch.float32)
+                    s = s_full[b, :, 0, t].to(dtype=torch.float32)
 
                 T = list(range(num_nodes))
 
@@ -924,24 +951,18 @@ class Reach(Node):
 
                     for l in T:
                         for l_prime, _ in self.neighbors_fn(l, b, t):
-
-                            val_s1 = s1[b, l_prime, t].item()
-                            val_s_l = s[l].item()
-                            val_s_l_prime = s[l_prime].item()
-
-                            v_prime = torch.tensor(min(val_s_l, val_s1), dtype=s.dtype)
-                            v_prime = torch.tensor(max(v_prime.item(), val_s_l_prime), dtype=s.dtype)
+                            v_prime = torch.minimum(s[l], s1[b, l_prime, 0, t].to(dtype=s.dtype))
+                            v_prime = torch.maximum(v_prime, s[l_prime])
 
                             if not torch.equal(v_prime, s[l_prime]):
-
-                                s = s.clone().scatter_(0, torch.tensor([l_prime]), v_prime.view(1))
+                                s = s.clone().scatter_(0, torch.tensor([l_prime]), v_prime.to(dtype=s.dtype))
                                 T_prime.append(l_prime)
 
                     T = T_prime
                     
                 s_batch = s_batch.clone()
-                s_batch.index_put_((torch.tensor([b]), torch.arange(num_nodes), torch.tensor([t])), s)
-        
+                s_batch.index_put_((torch.tensor([b]), torch.arange(num_nodes), torch.tensor([0]), torch.tensor([t])), s)
+                
         return s_batch
 
 # ---------------------
@@ -1064,10 +1085,10 @@ class Escape(Node):
     
     def _boolean(self, x: Tensor) -> Tensor:
         self._initialize_matrices(x)
-        s1 = self.child._boolean(x).squeeze(-1)  # Shape: [batch, nodes, timesteps]
+        s1 = self.child._boolean(x) # Shape: [batch, nodes, 1, timesteps]
         
-        batch_size, num_nodes, num_timesteps = s1.shape
-        s_batch = torch.zeros((batch_size, num_nodes, num_timesteps),
+        batch_size, num_nodes, _, num_timesteps = s1.shape
+        s_batch = torch.zeros((batch_size, num_nodes, 1, num_timesteps),
                             dtype=torch.float32,
                             requires_grad=True)
         
@@ -1078,7 +1099,7 @@ class Escape(Node):
                 e = torch.ones((num_nodes, num_nodes),
                              dtype=torch.float32,
                              requires_grad=True) * self.boolean_min_satisfaction
-                e = e - torch.diag(torch.diag(e)) + torch.diag(s1[b, :, t])
+                e = e - torch.diag(torch.diag(e)) + torch.diag(s1[b, :, :, t])
                 
                 T = [(i, i) for i in range(num_nodes)]
                 
@@ -1088,7 +1109,7 @@ class Escape(Node):
                     
                     for l1, l2 in T:
                         for l1_prime, w in self.neighbors_fn(l1, b, t):
-                            new_val = torch.minimum(s1[b, l1_prime, t], e[l1, l2])
+                            new_val = torch.minimum(s1[b, l1_prime, :, t], e[l1, l2])
                             old_val = e[l1_prime, l2]
                             combined = torch.maximum(old_val, new_val)
                              
@@ -1106,11 +1127,11 @@ class Escape(Node):
                     if vals:
                         max_val = torch.stack(vals).max()
                         s = s.clone().scatter_(0, torch.tensor([i]), max_val.unsqueeze(0))
-                
+
                 s_batch = s_batch.clone()
-                s_batch.index_put_((torch.tensor([b]), torch.arange(num_nodes), torch.tensor([t])), s) 
+                s_batch.index_put_((torch.tensor([b]), torch.arange(num_nodes), torch.tensor([0]), torch.tensor([t])), s)
         
-        return s_batch #.unsqueeze(-1)
+        return s_batch
 
     # -----------------------------
     #     Quantitative (Escape)
@@ -1118,10 +1139,10 @@ class Escape(Node):
     
     def _quantitative(self, x: Tensor, normalize: bool = False) -> Tensor:
         self._initialize_matrices(x)
-        s1 = self.child._quantitative(x, normalize).squeeze(-1) # Shape: [batch, nodes, timesteps]
+        s1 = self.child._quantitative(x, normalize) # Shape: [batch, nodes, 1, timesteps]
 
-        batch_size, num_nodes, num_timesteps = s1.shape
-        s_batch = torch.zeros((batch_size, num_nodes, num_timesteps),
+        batch_size, num_nodes, _, num_timesteps = s1.shape
+        s_batch = torch.zeros((batch_size, num_nodes, 1, num_timesteps),
                             dtype=s1.dtype,
                             requires_grad=True)
 
@@ -1129,10 +1150,10 @@ class Escape(Node):
             for t in range(num_timesteps):
                 D = self._compute_min_distance_matrix(b, t)
                 
-                # Differentiable diagonal assignment
+                # Differentiable diagonal assignment using torch.where
                 base = torch.full((num_nodes, num_nodes), self.quantitative_min_satisfaction, dtype=s1.dtype)
                 diag_mask = torch.eye(num_nodes, dtype=torch.bool)
-                e = torch.where(diag_mask, s1[b, :, t].unsqueeze(0).expand(num_nodes, num_nodes), base)
+                e = torch.where(diag_mask, s1[b, :, 0, t].unsqueeze(0).expand(num_nodes, num_nodes), base)
                 
                 T = [(i, i) for i in range(num_nodes)]
                 
@@ -1143,7 +1164,7 @@ class Escape(Node):
                     for l1, l2 in T:
                         for l1_prime, w in self.neighbors_fn(l1, b, t):
                             
-                            new_val = torch.minimum(s1[b, l1_prime, t], e[l1, l2])
+                            new_val = torch.minimum(s1[b, l1_prime, :, t], e[l1, l2])
                             old_val = e[l1_prime, l2]
                             combined = torch.maximum(old_val, new_val)
                                 
@@ -1169,7 +1190,7 @@ class Escape(Node):
                                              max_val.unsqueeze(0))
 
                 s_batch = s_batch.clone()
-                s_batch.index_put_((torch.tensor([b]), torch.arange(num_nodes), torch.tensor([t])), s) 
+                s_batch.index_put_((torch.tensor([b]), torch.arange(num_nodes), torch.tensor([0]), torch.tensor([t])), s) 
         
         return s_batch 
 
@@ -1284,49 +1305,20 @@ class Surround(Node):
         self.d2 = d2
         self.distance_domain_min = distance_domain_min
         self.distance_domain_max = distance_domain_max
-
-        # --- Local Dimensionality Adapter ---
-        class _PadBN1T(Node):
-            def __init__(self, child: Node): super().__init__(); self.child = child
-            
-            def _boolean(self, x: Tensor) -> Tensor:
-                z = self.child._boolean(x) # [B,N,T] 
-                return z.unsqueeze(2) if z.dim()==3 else z # -> [B,N,1,T]
-            
-            def _quantitative(self, x: Tensor, normalize: bool=False) -> Tensor:
-                z = self.child._quantitative(x, normalize)
-                return z.unsqueeze(2) if z.dim()==3 else z # -> [B,N,1,T]
-
-        class _NotOr_BNT(Node):
-            """Use Not(Or(...)) from the library (that requires 4D) and return [B,N,T]."""
-            def __init__(self, a: Node, b: Node):
-                super().__init__()
-                self.inner = Not(Or(_PadBN1T(a), _PadBN1T(b)))  # produce [B,N,1,T]
-                self.a, self.b = a, b
-            
-            def _boolean(self, x: Tensor) -> Tensor:
-                z = self.inner._boolean(x)  # [B,N,1,T]
-                return z.squeeze(2)         # -> [B,N,T]
-            
-            def _quantitative(self, x: Tensor, normalize: bool=False) -> Tensor:
-                z = self.inner._quantitative(x, normalize) # [B,N,1,T]
-                return z.squeeze(2) # -> [B,N,T]
-        # ------------------------------------
         
         # Reach( φ1 , ¬(φ1 ∨ φ2) )
         self.reach_op = Reach(
             left_child=self.left_child,
-            right_child=_NotOr_BNT(self.left_child, self.right_child),
+            right_child= Not(Or(self.left_child, self.right_child)),
             d1=self.d1, d2=d2,
             distance_domain_min=distance_domain_min,
             distance_domain_max=distance_domain_max
         )
 
         # Escape(φ1)
-        esc_d2 = distance_domain_max if distance_domain_max is not None else float('inf')
         self.escape_op = Escape(
             child=self.left_child,
-            d1=d2, d2=esc_d2,
+            d1=d2, d2=d2,
             distance_domain_min=distance_domain_min,
             distance_domain_max=distance_domain_max
         )
@@ -1335,15 +1327,15 @@ class Surround(Node):
         return f"surround_[{self.d1},{self.d2}] ( {self.left_child} , {self.right_child} )"
 
     def _boolean(self, x: Tensor) -> Tensor:
-        s1          = self.left_child._boolean(x).to(torch.float32)      # [B,N,T]
-        reach_part  = 1.0 - self.reach_op._boolean(x).to(torch.float32)  # [B,N,T]
-        escape_part = 1.0 - self.escape_op._boolean(x).to(torch.float32) # [B,N,T]
+        s1          = self.left_child._boolean(x).to(torch.float32)      # [B,N,1,T]
+        reach_part  = 1.0 - self.reach_op._boolean(x).to(torch.float32)  # [B,N,1,T]
+        escape_part = 1.0 - self.escape_op._boolean(x).to(torch.float32) # [B,N,1,T]
         
-        return torch.minimum(s1, torch.minimum(reach_part, escape_part)) # [B,N,T]
+        return torch.minimum(s1, torch.minimum(reach_part, escape_part)) # [B,N,1,T]
 
     def _quantitative(self, x: Tensor, normalize: bool=False) -> Tensor:
-        s1          = self.left_child._quantitative(x, normalize)        # [B,N,T]
-        reach_part  = - self.reach_op._quantitative(x, normalize)        # [B,N,T]
-        escape_part = - self.escape_op._quantitative(x, normalize)       # [B,N,T]
+        s1          = self.left_child._quantitative(x, normalize)        # [B,N,1,T]
+        reach_part  = - self.reach_op._quantitative(x, normalize)        # [B,N,1,T]
+        escape_part = - self.escape_op._quantitative(x, normalize)       # [B,N,1,T]
         
-        return torch.minimum(s1, torch.minimum(reach_part, escape_part)) # [B,N,T]
+        return torch.minimum(s1, torch.minimum(reach_part, escape_part)) # [B,N,1,T]
