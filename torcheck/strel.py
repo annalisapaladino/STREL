@@ -1318,7 +1318,7 @@ class Surround(Node):
         # Escape(φ1)
         self.escape_op = Escape(
             child=self.left_child,
-            d1=d2, d2=d2,
+            d1=d2, d2=distance_domain_max,
             distance_domain_min=distance_domain_min,
             distance_domain_max=distance_domain_max
         )
