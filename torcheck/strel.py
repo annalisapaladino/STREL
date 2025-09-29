@@ -1360,7 +1360,8 @@ class Somewhere(Node):
 
 class Everywhere(Node):
     """
-    Everywhere operator for STREL. Models satisfaction of a property at all locations within a distance interval.
+    Everywhere operator for STREL. Models satisfaction of a property
+    at all locations within a distance interval.
     """
     def __init__(
         self,
@@ -1376,30 +1377,28 @@ class Everywhere(Node):
         self.d2 = d2
         self.distance_domain_min = distance_domain_min
         self.distance_domain_max = distance_domain_max
-
         self.distance_function = distance_function
+
         # Create a true node (always true)
-        self.true_node = Atom(0, float('inf'), lte=True)  # x_0 <= inf (always true)
+        self.true_node = Atom(0, float('inf'), lte=True)
 
-        # Create Reach operator
-        self.reach_op = Reach(
-            left_child=self.true_node,
-            right_child=Not(self.child), # child,
-            d1=self.d1,
-            d2=d2,
-            distance_domain_min=distance_domain_min,
-            distance_domain_max=distance_domain_max,
-            distance_function = self.distance_function
-            )
-
+        # Everywhere φ = Not(Somewhere(Not φ))
+        self.formula = Not(Somewhere(
+            child=Not(self.child),
+            d2=self.d2,
+            distance_domain_min=self.distance_domain_min,
+            distance_domain_max=self.distance_domain_max,
+            distance_function=self.distance_function
+        ))
+        
     def __str__(self) -> str:
-        return f"somewhere_[{self.d1},{self.d2}] ( {self.child} )"
+        return f"everywhere_[{self.d1},{self.d2}] ( {self.child} )"
 
     def _boolean(self, x: Tensor) -> Tensor:
-        return torch.logical_not(self.reach_op._boolean(x))
+        return self.formula._boolean(x)
 
     def _quantitative(self, x: Tensor, normalize: bool = False) -> Tensor:
-        return - self.reach_op._quantitative(x, normalize)
+        return self.formula._quantitative(x, normalize)
 
 # ---------------------
 #     SURROUND
@@ -1407,7 +1406,8 @@ class Everywhere(Node):
 
 class Surround(Node):
     """
-    Surround operator for STREL. Models being surrounded by φ2 while in φ1 with distance constraints.
+    Surround operator for STREL.
+    Models being surrounded by φ2 while in φ1 with distance constraints.
     """
     def __init__(
         self,
@@ -1425,41 +1425,41 @@ class Surround(Node):
         self.d2 = d2
         self.distance_domain_min = distance_domain_min
         self.distance_domain_max = distance_domain_max
-
         self.distance_function = distance_function
 
-        # Reach( φ1 , ¬(φ1 ∨ φ2) )
-        self.reach_op = Reach(
+        # Reach(φ1, ¬(φ1 ∨ φ2))
+        reach_bad = Reach(
             left_child=self.left_child,
-            right_child= Not(Or(self.left_child, self.right_child)),
-            d1=self.d1, d2=d2,
+            right_child=Not(Or(self.left_child, self.right_child)),
+            d1=self.d1, 
+            d2=self.d2,
             distance_domain_min=distance_domain_min,
             distance_domain_max=distance_domain_max,
-            distance_function = distance_function
+            distance_function=self.distance_function
         )
 
         # Escape(φ1)
-        self.escape_op = Escape(
+        escape = Escape(
             child=self.left_child,
-            d1=d2, d2=distance_domain_max,
+            d1=self.d2, 
+            d2=distance_domain_max,
             distance_domain_min=distance_domain_min,
             distance_domain_max=distance_domain_max,
-            distance_function = distance_function
+            distance_function=self.distance_function
+        )
+
+        # Build full formula:
+        # φ1 ∧ ¬Reach(...) ∧ ¬Escape(...)
+        self.formula = And(
+            self.left_child,
+            And(Not(reach_bad), Not(escape))
         )
 
     def __str__(self):
         return f"surround_[{self.d1},{self.d2}] ( {self.left_child} , {self.right_child} )"
 
     def _boolean(self, x: Tensor) -> Tensor:
-        s1          = self.left_child._boolean(x).to(torch.float32)      # [B,N,1,T]
-        reach_part  = 1.0 - self.reach_op._boolean(x).to(torch.float32)  # [B,N,1,T]
-        escape_part = 1.0 - self.escape_op._boolean(x).to(torch.float32) # [B,N,1,T]
+        return self.formula._boolean(x)
 
-        return torch.minimum(s1, torch.minimum(reach_part, escape_part)).bool() # [B,N,1,T]
-
-    def _quantitative(self, x: Tensor, normalize: bool=False) -> Tensor:
-        s1          = self.left_child._quantitative(x, normalize)        # [B,N,1,T]
-        reach_part  = - self.reach_op._quantitative(x, normalize)        # [B,N,1,T]
-        escape_part = - self.escape_op._quantitative(x, normalize)       # [B,N,1,T]
-
-        return torch.minimum(s1, torch.minimum(reach_part, escape_part)) # [B,N,1,T]
+    def _quantitative(self, x: Tensor, normalize: bool = False) -> Tensor:
+        return self.formula._quantitative(x, normalize)
