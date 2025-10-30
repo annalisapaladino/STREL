@@ -136,25 +136,35 @@ def _compute_right_distance_matrix(x: Tensor, vert_thres:realnum = 2.) -> Tensor
 # TODO: automatic check of timespan when evaluating robustness? (should be done only at root node)
 
 def eventually(x: Tensor, time_span: int) -> Tensor:
-    # TODO: as of this implementation, the time_span must be int (we are working with steps,
-    #  not exactly points in the time axis)
-    # TODO: maybe converter from resolution to steps, if one has different setting
     """
     STL operator 'eventually' in 1D.
 
-    Parameters
-    ----------
-    x: torch.Tensor
-        Signal
-    time_span: any numeric type
-        Timespan duration
+    Input:
+        x : Tensor di forma [B, N, 1, T]
+        time_span : lunghezza della finestra temporale (in passi discreti)
 
-    Returns
-    -------
-    torch.Tensor
-    A tensor containing the result of the operation.
+    Output:
+        Tensor di forma [B, N, 1, T - time_span + 1]
     """
-    return F.max_pool1d(x, kernel_size=time_span, stride=1)
+    B, N, C, T = x.shape
+    # if C != 1:
+        # raise ValueError(f"'eventually' si aspetta C=1, trovato C={C}")
+
+    if time_span > T:
+        # raise ValueError(f"'eventually' kernel_size={time_span} è più grande della dimensione temporale disponibile T={T}")
+        time_span = T   # tronca la finestra al massimo disponibile
+
+    # Appiattiamo batch e nodi in una sola dimensione per compatibilità con F.max_pool1d
+    x_flat = x.view(B * N, C, T)             # [B*N, 1, T]
+
+    # max pooling lungo l'asse temporale
+    pooled = F.max_pool1d(x_flat, kernel_size=time_span, stride=1)
+
+    # pooled ha forma [B*N, 1, T - time_span + 1]
+    new_T = pooled.shape[-1]
+
+    # riportiamo a [B, N, 1, new_T]
+    return pooled.view(B, N, C, new_T)
 
 # ---------------------
 #     NODE
@@ -1321,7 +1331,7 @@ class Somewhere(Node):
         d2: realnum,
         distance_domain_min: realnum = 0.,
         distance_domain_max: realnum = float('inf'),
-        distance_function_: str = 'Euclid'
+        distance_function: str = 'Euclid' ##################### _
     ) -> None:
         super().__init__()
         self.child = child
@@ -1330,7 +1340,7 @@ class Somewhere(Node):
         self.distance_domain_min = distance_domain_min
         self.distance_domain_max = distance_domain_max
 
-        self.distance_function = distance_function
+        self.distance_function = distance_function 
         # Create a true node (always true)
         self.true_node = Atom(0, float('inf'), lte=True)  # x_0 <= inf (always true)
 
@@ -1379,7 +1389,7 @@ class Everywhere(Node):
         self.distance_domain_max = distance_domain_max
         self.distance_function = distance_function
 
-        # Create a true node (always true)
+        # Nodo sempre vero (⊤)
         self.true_node = Atom(0, float('inf'), lte=True)
 
         # Everywhere φ = Not(Somewhere(Not φ))
@@ -1431,8 +1441,7 @@ class Surround(Node):
         reach_bad = Reach(
             left_child=self.left_child,
             right_child=Not(Or(self.left_child, self.right_child)),
-            d1=self.d1, 
-            d2=self.d2,
+            d1=self.d1, d2=self.d2,
             distance_domain_min=distance_domain_min,
             distance_domain_max=distance_domain_max,
             distance_function=self.distance_function
